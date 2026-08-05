@@ -5,14 +5,7 @@ from io import BytesIO
 import zipfile
 import re
 import os
-
-# --- นำเข้าไลบรารีสำหรับคลิกหาพิกัด ---
-try:
-    from streamlit_image_coordinates import streamlit_image_coordinates
-except ImportError:
-    st.error("⚠️ ไม่พบไลบรารี streamlit-image-coordinates")
-    st.info("กรุณาเปิด Terminal แล้วพิมพ์: pip install streamlit-image-coordinates")
-    st.stop()
+import time
 
 # --- นำเข้าไลบรารีสำหรับสร้าง PowerPoint ---
 try:
@@ -47,14 +40,11 @@ def get_system_font_path():
 def fix_thai_text_old(text):
     """
     จัดตำแหน่งสระและวรรณยุกต์สำหรับ 'ฟอนต์รุ่นเก่า' (ใช้รหัส PUA)
-    รวมถึงการตัดฐาน ญ และ ฐ เมื่อมีสระล่าง
     """
     if not isinstance(text, str):
         return str(text) if pd.notna(text) else ""
         
     tone_marks = ['\u0e48', '\u0e49', '\u0e4a', '\u0e4b', '\u0e4c']
-    
-    # 1. วรรณยุกต์ที่ตามหลังสระบน
     upper_vowels = ['\u0e31', '\u0e34', '\u0e35', '\u0e36', '\u0e37', '\u0e4d']
     high_tone_marks = ['\uf713', '\uf714', '\uf715', '\uf716', '\uf717']
     
@@ -62,7 +52,6 @@ def fix_thai_text_old(text):
         for vowel in upper_vowels:
             text = text.replace(vowel + tone, vowel + high_tone_marks[i])
     
-    # 2. วรรณยุกต์ที่ตามหลัง ป ฝ ฟ
     tall_consonants = ['ป', 'ฝ', 'ฟ']
     left_tone_marks = ['\uf70a', '\uf70b', '\uf70c', '\uf70d', '\uf70e']
     
@@ -70,12 +59,11 @@ def fix_thai_text_old(text):
         for cons in tall_consonants:
             text = text.replace(cons + tone, cons + left_tone_marks[i])
             
-    # 3. สระอำ
     text = text.replace('\u0e4d\u0e32', '\u0e33')
     
-    # 4. ญ และ ฐ เมื่อมีสระล่าง (ตัดฐาน)
-    YO_YING_NO_BASE = '\uF70F'  # ญ (ตัดฐาน)
-    THO_THAN_NO_BASE = '\uF700' # ฐ (ตัดฐาน)
+    # ญ และ ฐ เมื่อมีสระล่าง
+    YO_YING_NO_BASE = '\uF70F'
+    THO_THAN_NO_BASE = '\uF700'
     
     text = text.replace('ญุ', YO_YING_NO_BASE + 'ุ')
     text = text.replace('ญู', YO_YING_NO_BASE + 'ู')
@@ -101,16 +89,20 @@ def fix_thai_text(text, font_version="ใหม่"):
 
 def get_font(font_name, size):
     """ดึงฟอนต์ตามชื่อและขนาดจากหน่วยความจำ"""
-    if font_name in st.session_state.fonts_dict:
-        font_data = st.session_state.fonts_dict[font_name]['data']
-        try:
+    try:
+        if font_name and font_name in st.session_state.fonts_dict:
+            font_data = st.session_state.fonts_dict[font_name]['data']
             return ImageFont.truetype(BytesIO(font_data), size)
-        except Exception as e:
-            st.error(f"❌ ไม่สามารถโหลดฟอนต์ '{font_name}': {e}")
+    except Exception as e:
+        pass
     
+    # ใช้ฟอนต์ระบบสำรอง
     sys_path = get_system_font_path()
     if sys_path:
-        return ImageFont.truetype(sys_path, size)
+        try:
+            return ImageFont.truetype(sys_path, size)
+        except:
+            return ImageFont.load_default()
     return ImageFont.load_default()
 
 def sanitize_filename(name):
@@ -136,13 +128,13 @@ def render_certificate(template_img, texts, row_data=None):
         if not content: 
             continue
         
-        # ดึงประเภทฟอนต์ที่บันทึกไว้สำหรับข้อความนี้
+        # ดึงประเภทฟอนต์
         f_info = st.session_state.fonts_dict.get(txt.get('font_name'), {'version': 'ใหม่'})
         content = fix_thai_text(content, f_info['version'])
             
         font = get_font(txt.get('font_name'), txt['size'])
 
-        # วาดข้อความกึ่งกลางที่ตำแหน่งที่คลิก
+        # วาดข้อความกึ่งกลาง
         draw.text((txt['x'], txt['y']), content, fill=txt['color'], font=font, anchor="mm")
     return img
 
@@ -166,13 +158,13 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
     for idx, row in data_df.iterrows():
         slide = prs.slides.add_slide(blank_slide_layout)
         
-        # 1. แปะภาพพื้นหลัง
+        # แปะภาพพื้นหลัง
         bg_io = BytesIO()
         template_img.save(bg_io, format="PNG")
         bg_io.seek(0)
         slide.shapes.add_picture(bg_io, 0, 0, width=prs.slide_width, height=prs.slide_height)
         
-        # 2. เพิ่มข้อความแต่ละรายการ
+        # เพิ่มข้อความ
         for txt in texts:
             if txt['type'] == 'static':
                 content = txt['text']
@@ -186,15 +178,12 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             if not content: 
                 continue
             
-            # สำหรับ PowerPoint ใช้ข้อความปกติ
             ppt_content = content
             font_size_pt = txt['size'] * 0.75
             
-            # แปลงพิกัดจาก pixel เป็น EMUs
             center_x_emu = txt['x'] * 9525
             center_y_emu = txt['y'] * 9525
             
-            # สร้างกล่องข้อความ
             box_width_emu = prs.slide_width
             box_height_emu = int(txt['size'] * 2.5 * 9525)
             
@@ -215,8 +204,6 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             
             p = tf.paragraphs[0]
             p.alignment = PP_ALIGN.CENTER
-            p.space_before = Pt(0)
-            p.space_after = Pt(0)
             
             run = p.runs[0]
             run.font.size = Pt(font_size_pt)
@@ -325,11 +312,19 @@ with col_img:
     ratio = original_w / display_w if original_w > display_w else 1.0
     display_img = current_preview.resize((display_w, int(original_h / ratio))) if original_w > display_w else current_preview
     
-    coords = streamlit_image_coordinates(display_img, key="coords")
-    
-    if coords:
-        st.session_state.click_x = int(coords['x'] * ratio)
-        st.session_state.click_y = int(coords['y'] * ratio)
+    # ใช้ streamlit_image_coordinates
+    try:
+        coords = streamlit_image_coordinates(display_img, key="coords")
+        if coords:
+            st.session_state.click_x = int(coords['x'] * ratio)
+            st.session_state.click_y = int(coords['y'] * ratio)
+    except Exception as e:
+        st.warning("⚠️ ระบบคลิกยังไม่ทำงาน กรุณาใช้ slider แทน")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.click_x = st.slider("X", 0, original_w, st.session_state.click_x)
+        with col2:
+            st.session_state.click_y = st.slider("Y", 0, original_h, st.session_state.click_y)
     
     st.info(f"📍 พิกัดปัจจุบัน: X={st.session_state.click_x}, Y={st.session_state.click_y}")
 
@@ -457,7 +452,4 @@ with st.sidebar:
     4. คลิกบนรูปเพื่อกำหนดพิกัด
     5. เพิ่มข้อความ
     6. สร้างและดาวน์โหลด
-    
-    💡 **ฟอนต์ใหม่:** OpenType
-    💡 **ฟอนต์เก่า:** ปรับสระลอย PUA
     """)
