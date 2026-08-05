@@ -290,6 +290,8 @@ if 'edit_index' not in st.session_state:
     st.session_state.edit_index = None
 if 'zoom_level' not in st.session_state:
     st.session_state.zoom_level = 1.0
+if 'selected_column' not in st.session_state:
+    st.session_state.selected_column = None
 
 st.title("📜 Auto Certificate Generator")
 
@@ -459,7 +461,7 @@ with col_img:
                   (st.session_state.click_x + 5, st.session_state.click_y + 5)], 
                  fill='red')
     
-    # แสดงรูป - แก้ไข use_column_width เป็น use_container_width
+    # แสดงรูป
     img_display = img_with_marker.resize((display_w, display_h))
     st.image(img_display, use_container_width=True)
 
@@ -469,46 +471,50 @@ with col_form:
     if edit_mode:
         st.subheader("✏️ แก้ไขข้อความ")
         edit_txt = st.session_state.texts[st.session_state.edit_index]
-        default_text = edit_txt.get('text', '')
         default_column = edit_txt.get('column', None)
-        default_type = 'excel' if edit_txt['type'] == 'excel' else 'พิมพ์เอง'
     else:
         st.subheader("➕ เพิ่มข้อความ")
-        default_text = ''
         default_column = None
-        default_type = 'พิมพ์เอง'
     
-    cols_options = st.session_state.data.columns.tolist() if st.session_state.data is not None else []
+    # เช็คว่ามีข้อมูลหรือไม่
+    if st.session_state.data is None or st.session_state.data.empty:
+        st.warning("⚠️ กรุณาอัปโหลดไฟล์รายชื่อก่อน")
+        st.stop()
     
-    t_type = st.radio(
-        "ชนิดข้อความ",
-        ["ดึงจากไฟล์รายชื่อ", "พิมพ์เอง"],
-        horizontal=True,
-        key="text_type",
-        index=0 if default_type == 'excel' else 1
+    cols_options = st.session_state.data.columns.tolist()
+    
+    # ปุ่มรีเฟรช
+    col_refresh1, col_refresh2 = st.columns([4, 1])
+    with col_refresh1:
+        st.write("**เลือกหัวข้อ (คอลัมน์)**")
+    with col_refresh2:
+        if st.button("🔄 รีเฟรช", use_container_width=True):
+            # รีเฟรชข้อมูล
+            st.session_state.selected_column = None
+            st.rerun()
+    
+    # Selectbox สำหรับเลือกคอลัมน์
+    default_index = 0
+    if edit_mode and default_column and default_column in cols_options:
+        default_index = cols_options.index(default_column)
+    elif st.session_state.selected_column and st.session_state.selected_column in cols_options:
+        default_index = cols_options.index(st.session_state.selected_column)
+    
+    selected_column = st.selectbox(
+        "เลือกหัวข้อ (คอลัมน์)",
+        cols_options,
+        index=default_index,
+        key="excel_column_select",
+        label_visibility="collapsed"
     )
     
-    if t_type == "ดึงจากไฟล์รายชื่อ":
-        if not cols_options:
-            st.warning("⚠️ กรุณาอัปโหลดไฟล์รายชื่อก่อน")
-            selected_column = None
-        else:
-            default_index = 0
-            if default_column and default_column in cols_options:
-                default_index = cols_options.index(default_column)
-            selected_column = st.selectbox(
-                "เลือกหัวข้อ (คอลัมน์)",
-                cols_options,
-                index=default_index,
-                key="excel_column_select"
-            )
-        t_val = ""
-    else:
-        if edit_mode and default_type == 'พิมพ์เอง':
-            t_val = st.text_input("ข้อความที่ต้องการพิมพ์", value=default_text, key="text_input")
-        else:
-            t_val = st.text_input("ข้อความที่ต้องการพิมพ์", key="text_input")
-        selected_column = None
+    # เก็บค่าที่เลือก
+    st.session_state.selected_column = selected_column
+    
+    # แสดงตัวอย่างข้อมูล
+    if st.session_state.data is not None and not st.session_state.data.empty:
+        sample_value = st.session_state.data[selected_column].iloc[st.session_state.preview_row]
+        st.info(f"📝 ตัวอย่าง: {sample_value}")
     
     with st.form("add_text_form", clear_on_submit=not edit_mode):
         c1, c2 = st.columns(2)
@@ -543,19 +549,17 @@ with col_form:
         if submit:
             if not selected_font:
                 st.error("❌ กรุณาเลือกฟอนต์")
-            elif t_type == "พิมพ์เอง" and not t_val and not edit_mode:
-                st.error("❌ กรุณาพิมพ์ข้อความ")
-            elif t_type == "ดึงจากไฟล์รายชื่อ" and not selected_column and not edit_mode:
-                st.error("❌ กรุณาเลือกคอลัมน์")
+            elif not selected_column:
+                st.error("❌ กรุณาเลือกหัวข้อ")
             else:
                 font_version_png = "เก่า" if "เก่า" in font_type_png else "ใหม่"
                 font_version_ppt = "เก่า" if "เก่า" in font_type_ppt else "ใหม่"
                 
                 if edit_mode and st.session_state.edit_index is not None:
                     st.session_state.texts[st.session_state.edit_index] = {
-                        'type': 'excel' if t_type == "ดึงจากไฟล์รายชื่อ" else 'static',
-                        'text': t_val if t_type == "พิมพ์เอง" else edit_txt.get('text', ''),
-                        'column': selected_column if t_type == "ดึงจากไฟล์รายชื่อ" else edit_txt.get('column', None),
+                        'type': 'excel',
+                        'text': '',
+                        'column': selected_column,
                         'x': x_pos,
                         'y': y_pos,
                         'size': f_size,
@@ -568,8 +572,8 @@ with col_form:
                     st.success("✅ อัปเดตข้อความสำเร็จ!")
                 else:
                     st.session_state.texts.append({
-                        'type': 'excel' if t_type == "ดึงจากไฟล์รายชื่อ" else 'static',
-                        'text': t_val,
+                        'type': 'excel',
+                        'text': '',
                         'column': selected_column,
                         'x': x_pos,
                         'y': y_pos,
@@ -591,7 +595,7 @@ with col_form:
         st.markdown("---")
         st.write("**📋 รายการข้อความ:**")
         for i, t in enumerate(st.session_state.texts):
-            lbl = t['text'] if t['type'] == 'static' else f"📊 {t['column']}"
+            lbl = f"📊 {t['column']}"
             col_act1, col_act2, col_act3 = st.columns([3, 1, 1])
             font_version_display = t.get('font_version', 'ใหม่')
             col_act1.write(f"{i+1}. {lbl} | ฟอนต์: {t['font_name']} (รุ่น{font_version_display}) | ขนาด: {t['size']}")
@@ -660,6 +664,6 @@ with st.sidebar:
     2. เลือกประเภทฟอนต์และอัปโหลด .ttf
     3. อัปโหลดไฟล์ Excel/CSV
     4. ใช้ปุ่มควบคุมเพื่อกำหนดพิกัด
-    5. เพิ่ม/แก้ไขข้อความ
+    5. เลือกหัวข้อและเพิ่มข้อความ
     6. สร้างและดาวน์โหลด
     """)
