@@ -17,7 +17,7 @@ except ImportError:
 # --- นำเข้าไลบรารีสำหรับสร้าง PowerPoint ---
 try:
     from pptx import Presentation
-    from pptx.util import Pt, Inches
+    from pptx.util import Pt
     from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
     from pptx.dml.color import RGBColor
 except ImportError:
@@ -142,15 +142,6 @@ def render_certificate(template_img, texts, row_data=None):
             
         font = get_font(txt.get('font_name'), txt['size'])
 
-        # วัดขนาดข้อความเพื่อจัดกึ่งกลาง
-        try:
-            bbox = font.getbbox(content)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-        except:
-            text_width = draw.textlength(content, font=font)
-            text_height = txt['size']
-
         # วาดข้อความกึ่งกลางที่ตำแหน่งที่คลิก
         draw.text((txt['x'], txt['y']), content, fill=txt['color'], font=font, anchor="mm")
     return img
@@ -195,10 +186,8 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             if not content: 
                 continue
             
-            # สำหรับ PowerPoint ใช้ข้อความปกติ (ไม่ปรับ PUA)
+            # สำหรับ PowerPoint ใช้ข้อความปกติ
             ppt_content = content
-            
-            # คำนวณขนาดฟอนต์เป็น point
             font_size_pt = txt['size'] * 0.75
             
             # แปลงพิกัดจาก pixel เป็น EMUs
@@ -206,8 +195,8 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             center_y_emu = txt['y'] * 9525
             
             # สร้างกล่องข้อความ
-            box_width_emu = prs.slide_width  # ใช้ความกว้างเต็มสไลด์
-            box_height_emu = int(txt['size'] * 2.5 * 9525)  # เผื่อพื้นที่
+            box_width_emu = prs.slide_width
+            box_height_emu = int(txt['size'] * 2.5 * 9525)
             
             left_emu = center_x_emu - (box_width_emu / 2)
             top_emu = center_y_emu - (box_height_emu / 2)
@@ -219,25 +208,21 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
                 int(box_height_emu)
             )
             
-            # ตั้งค่าข้อความ
             tf = txBox.text_frame
             tf.text = ppt_content
             tf.word_wrap = True
             tf.vertical_anchor = MSO_ANCHOR.MIDDLE
             
-            # จัดกึ่งกลางแนวนอน
             p = tf.paragraphs[0]
             p.alignment = PP_ALIGN.CENTER
             p.space_before = Pt(0)
             p.space_after = Pt(0)
             
-            # ตั้งค่ารูปแบบฟอนต์
             run = p.runs[0]
             run.font.size = Pt(font_size_pt)
             if txt.get('font_name'):
                 run.font.name = txt['font_name']
             
-            # ตั้งค่าสี
             rgb = hex_to_rgb(txt['color'])
             run.font.color.rgb = RGBColor(rgb[0], rgb[1], rgb[2])
     
@@ -314,7 +299,7 @@ with st.sidebar:
         except Exception as e:
             st.error(f"❌ โหลดข้อมูลไม่สำเร็จ: {e}")
 
-# ตรวจสอบว่ามี template หรือไม่
+# ตรวจสอบ template
 if st.session_state.template is None:
     st.info("👈 กรุณาอัปโหลด 'พื้นหลังเกียรติบัตร' ทางด้านซ้ายเพื่อเริ่มต้น")
     st.stop()
@@ -331,29 +316,26 @@ with col_img:
         row_idx = st.number_input("ดูตัวอย่างจากแถวที่:", 0, len(st.session_state.data)-1, 0)
         preview_row = st.session_state.data.iloc[row_idx].to_dict()
     
-    # สร้างรูปพรีวิวที่มีข้อความทั้งหมด
+    # สร้างรูปพรีวิว
     current_preview = render_certificate(st.session_state.template, st.session_state.texts, preview_row)
     
-    st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง (พิกัดจะอัปเดตอัตโนมัติ)**")
+    st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง**")
     original_w, original_h = current_preview.size
     display_w = 700 
     ratio = original_w / display_w if original_w > display_w else 1.0
     display_img = current_preview.resize((display_w, int(original_h / ratio))) if original_w > display_w else current_preview
     
-    # ใช้ streamlit_image_coordinates สำหรับคลิก
     coords = streamlit_image_coordinates(display_img, key="coords")
     
     if coords:
         st.session_state.click_x = int(coords['x'] * ratio)
         st.session_state.click_y = int(coords['y'] * ratio)
     
-    # แสดงพิกัดปัจจุบัน
     st.info(f"📍 พิกัดปัจจุบัน: X={st.session_state.click_x}, Y={st.session_state.click_y}")
 
 with col_form:
     st.subheader("➕ เพิ่มข้อความ")
     
-    # ตรวจสอบว่ามีข้อมูลหรือไม่
     cols_options = st.session_state.data.columns.tolist() if st.session_state.data is not None else []
     
     with st.form("add_text_form", clear_on_submit=True):
@@ -405,7 +387,7 @@ with col_form:
                 st.success("✅ เพิ่มข้อความสำเร็จ!")
                 st.rerun()
 
-    # รายการข้อความที่เพิ่มแล้ว
+    # แสดงรายการข้อความ
     if st.session_state.texts:
         st.markdown("---")
         st.write("**📋 รายการข้อความ:**")
@@ -431,13 +413,12 @@ if st.session_state.data is not None and not st.session_state.data.empty and st.
     if st.button("🚀 เริ่มสร้างทั้งหมด", type="primary"):
         with st.spinner("กำลังประมวลผล..."):
             if file_format == "PowerPoint":
-                # สร้าง PowerPoint ที่ข้อความแก้ไขได้
                 pptx_io = create_pptx_with_editable_text(
                     st.session_state.template,
                     st.session_state.texts,
                     st.session_state.data
                 )
-                st.success("✅ สร้างไฟล์ PowerPoint เรียบร้อย! (ข้อความแก้ไขได้)")
+                st.success("✅ สร้างไฟล์ PowerPoint เรียบร้อย!")
                 st.download_button(
                     "📥 ดาวน์โหลด PowerPoint",
                     pptx_io.getvalue(),
@@ -445,7 +426,6 @@ if st.session_state.data is not None and not st.session_state.data.empty and st.
                     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
                 )
             else:
-                # สร้าง ZIP สำหรับ PNG หรือ PDF
                 zip_buffer = BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w') as zf:
                     for _, row in st.session_state.data.iterrows():
@@ -454,7 +434,7 @@ if st.session_state.data is not None and not st.session_state.data.empty and st.
                         if file_format == "PNG":
                             final_img.save(img_io, format="PNG")
                             ext = "png"
-                        else:  # PDF
+                        else:
                             final_img.save(img_io, format="PDF", resolution=100.0)
                             ext = "pdf"
                         zf.writestr(f"{sanitize_filename(row[filename_col])}.{ext}", img_io.getvalue())
@@ -466,18 +446,18 @@ if st.session_state.data is not None and not st.session_state.data.empty and st.
                     "application/zip"
                 )
 
-# --- คำแนะนำการใช้งาน ---
+# --- คำแนะนำ ---
 with st.sidebar:
     st.markdown("---")
     st.markdown("""
     ### 📖 วิธีใช้
     1. อัปโหลดพื้นหลังเกียรติบัตร
     2. เลือกประเภทฟอนต์และอัปโหลด .ttf
-    3. อัปโหลดไฟล์ Excel/CSV (ถ้ามี)
+    3. อัปโหลดไฟล์ Excel/CSV
     4. คลิกบนรูปเพื่อกำหนดพิกัด
     5. เพิ่มข้อความ
     6. สร้างและดาวน์โหลด
     
-    💡 **ฟอนต์ใหม่:** OpenType แสดงผลปกติ
+    💡 **ฟอนต์ใหม่:** OpenType
     💡 **ฟอนต์เก่า:** ปรับสระลอย PUA
     """)
