@@ -125,10 +125,22 @@ def render_certificate(template_img, texts, row_data=None):
         except:
             text_width = draw.textlength(content, font=font)
 
-        # คำนวณจุดเริ่มต้น x
+        # คำนวณจุดเริ่มต้น x โดยให้ข้อความกึ่งกลางที่ตำแหน่ง x ที่เลือก
+        # จุด x ที่เก็บไว้คือจุดกึ่งกลางของข้อความ
         start_x = txt['x'] - (text_width / 2)
+        
+        # วาดข้อความโดยให้จุดกึ่งกลางอยู่ที่ตำแหน่ง x, y
         draw.text((start_x, txt['y']), content, fill=txt['color'], font=font, anchor="ls")
     return img
+
+def get_text_size(text, font_name, size):
+    """คำนวณขนาดข้อความเพื่อแสดงตัวอย่าง"""
+    font = get_font(font_name, size)
+    try:
+        bbox = font.getbbox(text)
+        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except:
+        return len(text) * size * 0.6, size * 1.2
 
 # ==========================================
 # 🎨 UI - STREAMLIT APP
@@ -180,11 +192,12 @@ if 'template' not in st.session_state:
 
 # --- MAIN AREA ---
 st.header("📍 กำหนดตำแหน่งและข้อความ")
+st.markdown("💡 **คำแนะนำ:** คลิกที่ปุ่มเพื่อเลื่อนตำแหน่ง หรือปรับค่า X, Y โดยตรง จุดที่เลือกคือ **กึ่งกลาง** ของข้อความ")
 
 col_img, col_form = st.columns([1.5, 1])
 
 with col_img:
-    st.markdown("**🖱️ คลิกที่รูปภาพเพื่อกำหนดตำแหน่ง X และ Y**")
+    st.markdown("**🖱️ คลิกที่ปุ่มเพื่อปรับตำแหน่ง (จุดกึ่งกลางข้อความ)**")
     
     original_w, original_h = st.session_state.template.size
     display_w = 700 
@@ -192,64 +205,82 @@ with col_img:
     display_h = int(original_h / ratio) if original_w > display_w else original_h
     display_img = st.session_state.template.resize((display_w, display_h)) if original_w > display_w else st.session_state.template
     
-    # แสดงรูปภาพ
-    st.image(display_img, use_column_width=True)
+    # แสดงรูปภาพพร้อมเครื่องหมายกากบาท
+    img_with_marker = display_img.copy()
+    draw = ImageDraw.Draw(img_with_marker)
+    marker_x = int(st.session_state.click_x / ratio)
+    marker_y = int(st.session_state.click_y / ratio)
     
-    # ใช้ระบบคลิกด้วยปุ่ม + พิกัดแบบละเอียด
+    # วาดเครื่องหมายกากบาทที่ตำแหน่งกึ่งกลาง
+    marker_size = 25
+    draw.line([(marker_x - marker_size, marker_y), (marker_x + marker_size, marker_y)], fill='red', width=3)
+    draw.line([(marker_x, marker_y - marker_size), (marker_x, marker_y + marker_size)], fill='red', width=3)
+    draw.ellipse([(marker_x - 6, marker_y - 6), (marker_x + 6, marker_y + 6)], fill='red', outline='white', width=2)
+    
+    # แสดงข้อความตัวอย่างที่ตำแหน่งกึ่งกลาง
+    if st.session_state.texts and st.session_state.font_names:
+        last_text = st.session_state.texts[-1]
+        if last_text.get('font_name'):
+            font = get_font(last_text['font_name'], last_text['size'])
+            try:
+                bbox = font.getbbox(last_text['text'] if last_text['type'] == 'static' else "ตัวอย่าง")
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                
+                # แสดงกรอบข้อความที่ตำแหน่ง
+                start_x = marker_x - (text_width / 2 / ratio)
+                start_y = marker_y - (text_height / ratio)
+                draw.rectangle([start_x, start_y, start_x + text_width/ratio, start_y + text_height/ratio], 
+                             outline='blue', width=2)
+                draw.text((marker_x - (text_width / 2 / ratio), marker_y), 
+                         last_text['text'] if last_text['type'] == 'static' else "ตัวอย่าง", 
+                         fill='blue', font=font, anchor="ls")
+            except:
+                pass
+    
+    st.image(img_with_marker, use_column_width=True)
+    
+    # ระบบควบคุมตำแหน่ง
     st.markdown("---")
-    st.markdown("**🎯 กำหนดพิกัดด้วยการคลิกและปรับแต่ง**")
+    st.markdown("**🎯 ปรับตำแหน่งกึ่งกลางข้อความ**")
     
-    # สร้างตารางสำหรับคลิก (จำลอง)
-    col_click1, col_click2, col_click3 = st.columns(3)
-    
-    with col_click1:
-        if st.button("⬅️ ซ้าย", use_container_width=True):
-            st.session_state.click_x = max(0, st.session_state.click_x - 50)
-            st.rerun()
-    
-    with col_click2:
+    # แถวบน
+    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    with col_btn1:
         if st.button("⬆️ บน", use_container_width=True):
-            st.session_state.click_y = max(0, st.session_state.click_y - 50)
+            st.session_state.click_y = max(0, st.session_state.click_y - 20)
             st.rerun()
-    
-    with col_click3:
+    with col_btn2:
+        if st.button("⬅️ ซ้าย", use_container_width=True):
+            st.session_state.click_x = max(0, st.session_state.click_x - 20)
+            st.rerun()
+    with col_btn3:
         if st.button("➡️ ขวา", use_container_width=True):
-            st.session_state.click_x = min(original_w, st.session_state.click_x + 50)
+            st.session_state.click_x = min(original_w, st.session_state.click_x + 20)
             st.rerun()
     
-    col_click4, col_click5, col_click6 = st.columns(3)
-    
-    with col_click4:
+    # แถวล่าง
+    col_btn4, col_btn5, col_btn6 = st.columns(3)
+    with col_btn4:
         if st.button("⬇️ ล่าง", use_container_width=True):
-            st.session_state.click_y = min(original_h, st.session_state.click_y + 50)
+            st.session_state.click_y = min(original_h, st.session_state.click_y + 20)
             st.rerun()
-    
-    with col_click5:
-        if st.button("🎯 กลาง", use_container_width=True):
+    with col_btn5:
+        if st.button("🎯 กลางภาพ", use_container_width=True):
             st.session_state.click_x = original_w // 2
             st.session_state.click_y = original_h // 2
             st.rerun()
-    
-    with col_click6:
-        if st.button("🔄 รีเซ็ต (0,0)", use_container_width=True):
+    with col_btn6:
+        if st.button("🔄 รีเซ็ต", use_container_width=True):
             st.session_state.click_x = 0
             st.session_state.click_y = 0
             st.rerun()
     
-    # แสดงตำแหน่งปัจจุบันบนรูป
-    st.markdown(f"**📍 ตำแหน่งปัจจุบัน: X = {st.session_state.click_x}, Y = {st.session_state.click_y}**")
+    # แสดงตำแหน่งปัจจุบัน
+    st.markdown(f"**📍 กึ่งกลางข้อความอยู่ที่: X = {st.session_state.click_x}, Y = {st.session_state.click_y}**")
     
-    # แสดงเครื่องหมายกากบาทบนรูป
-    if st.checkbox("แสดงเครื่องหมายกากบาทบนรูป", value=True):
-        img_with_marker = display_img.copy()
-        draw = ImageDraw.Draw(img_with_marker)
-        marker_x = int(st.session_state.click_x / ratio)
-        marker_y = int(st.session_state.click_y / ratio)
-        marker_size = 20
-        draw.line([(marker_x - marker_size, marker_y), (marker_x + marker_size, marker_y)], fill='red', width=2)
-        draw.line([(marker_x, marker_y - marker_size), (marker_x, marker_y + marker_size)], fill='red', width=2)
-        draw.ellipse([(marker_x - 5, marker_y - 5), (marker_x + 5, marker_y + 5)], fill='red')
-        st.image(img_with_marker, use_column_width=True)
+    # แสดงขนาดภาพ
+    st.caption(f"ขนาดภาพต้นฉบับ: {original_w} x {original_h} พิกเซล")
 
 with col_form:
     with st.form("add_text_form", clear_on_submit=True):
@@ -258,8 +289,8 @@ with col_form:
         t_col = st.selectbox("เลือกหัวข้อ (ถ้าดึงจากไฟล์)", st.session_state.data.columns if 'data' in st.session_state else ["กรุณาอัปโหลดไฟล์รายชื่อ"])
         
         c1, c2 = st.columns(2)
-        x_pos = c1.number_input("ตำแหน่ง X", value=st.session_state.click_x)
-        y_pos = c2.number_input("ตำแหน่ง Y", value=st.session_state.click_y)
+        x_pos = c1.number_input("ตำแหน่ง X (กึ่งกลาง)", value=st.session_state.click_x)
+        y_pos = c2.number_input("ตำแหน่ง Y (กึ่งกลาง)", value=st.session_state.click_y)
         
         f_size = st.slider("ขนาดฟอนต์", 10, 500, value=60)
         f_color = st.color_picker("เลือกสีข้อความ", value="#000000")
@@ -271,6 +302,17 @@ with col_form:
         else:
             selected_font = st.selectbox("เลือกฟอนต์สำหรับข้อความนี้", st.session_state.font_names)
         
+        # แสดงตัวอย่างขนาดข้อความ
+        if selected_font and t_val:
+            try:
+                font = get_font(selected_font, f_size)
+                bbox = font.getbbox(t_val)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                st.caption(f"📏 ขนาดข้อความ: {text_w} x {text_h} พิกเซล (กว้าง x สูง)")
+            except:
+                pass
+        
         if st.form_submit_button("➕ เพิ่มข้อความลงเกียรติบัตร"):
             if selected_font:
                 st.session_state.texts.append({
@@ -280,7 +322,7 @@ with col_form:
                     'size': f_size, 'color': f_color,
                     'font_name': selected_font
                 })
-                st.success("เพิ่มข้อความสำเร็จ!")
+                st.success("✅ เพิ่มข้อความสำเร็จ!")
                 st.rerun()
             else:
                 st.error("กรุณาอัปโหลดและเลือกฟอนต์ก่อนเพิ่มข้อความ")
@@ -292,7 +334,7 @@ if st.session_state.texts:
     for i, t in enumerate(st.session_state.texts):
         lbl = t['text'] if t['type'] == 'static' else f"คอลัมน์: {t['column']}"
         cols = st.columns([4, 1])
-        cols[0].write(f"**{i+1}. {lbl}** | ฟอนต์: {t['font_name']} | ขนาด: {t['size']} | พิกัด: ({t['x']}, {t['y']})")
+        cols[0].write(f"**{i+1}. {lbl}** | ฟอนต์: {t['font_name']} | ขนาด: {t['size']} | กึ่งกลาง: ({t['x']}, {t['y']})")
         if cols[1].button("🗑️ ลบ", key=f"del_{i}"):
             st.session_state.texts.pop(i)
             st.rerun()
@@ -370,3 +412,18 @@ if 'data' in st.session_state and st.session_state.texts:
                         
                 st.success("✅ สร้างไฟล์ ZIP ทั้งหมดเรียบร้อย!")
                 st.download_button(f"📥 ดาวน์โหลดไฟล์ทั้งหมด ({file_format} ใน ZIP)", zip_buffer.getvalue(), "certificates.zip", "application/zip")
+
+# --- คำแนะนำการใช้งาน ---
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("""
+    ### 📖 วิธีใช้
+    1. อัปโหลดพื้นหลังเกียรติบัตร
+    2. อัปโหลดฟอนต์ .ttf
+    3. อัปโหลดไฟล์ Excel/CSV (ถ้ามี)
+    4. ปรับตำแหน่งกึ่งกลางด้วยปุ่ม หรือใส่ค่า X, Y
+    5. พิมพ์ข้อความและเพิ่มลงในเกียรติบัตร
+    6. กดสร้างและดาวน์โหลด
+    
+    💡 **ตำแหน่ง X, Y คือจุดกึ่งกลางของข้อความ**
+    """)
