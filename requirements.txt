@@ -1,5 +1,5 @@
-streamlit==1.41.0
-Pillow==11.0.0
-pandas==2.2.3
-openpyxl==3.1.5
-python-pptx==1.0.2
+streamlit==1.35.0
+Pillow==9.5.0
+pandas==2.0.3
+openpyxl==3.1.2
+python-pptx==0.6.21
