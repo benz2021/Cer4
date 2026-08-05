@@ -5,7 +5,14 @@ from io import BytesIO
 import zipfile
 import re
 import os
-import time
+
+# --- นำเข้าไลบรารีสำหรับคลิกหาพิกัด ---
+try:
+    from streamlit_image_coordinates import streamlit_image_coordinates
+except ImportError:
+    st.error("⚠️ ไม่พบไลบรารี streamlit-image-coordinates")
+    st.info("กรุณาเปิด Terminal แล้วพิมพ์: pip install streamlit-image-coordinates")
+    st.stop()
 
 # --- นำเข้าไลบรารีสำหรับสร้าง PowerPoint ---
 try:
@@ -109,7 +116,7 @@ def sanitize_filename(name):
     return re.sub(r'[<>:"/\\|?*]', '_', str(name)).strip() or "certificate"
 
 def render_certificate(template_img, texts, row_data=None):
-    """สร้างภาพเกียรติบัตรพร้อมข้อความ"""
+    """สร้างภาพเกียรติบัตรพร้อมข้อความ - ใช้ anchor='mm' เพื่อให้กึ่งกลาง"""
     img = template_img.copy()
     if img.mode != 'RGB':
         img = img.convert('RGB')
@@ -128,13 +135,13 @@ def render_certificate(template_img, texts, row_data=None):
         if not content: 
             continue
         
-        # ดึงประเภทฟอนต์
-        f_info = st.session_state.fonts_dict.get(txt.get('font_name'), {'version': 'ใหม่'})
-        content = fix_thai_text(content, f_info['version'])
+        # ดึงประเภทฟอนต์สำหรับ PNG/PDF
+        font_version = txt.get('font_version', 'ใหม่')
+        content = fix_thai_text(content, font_version)
             
         font = get_font(txt.get('font_name'), txt['size'])
 
-        # วาดข้อความกึ่งกลาง
+        # ใช้ anchor='mm' (middle-middle) ให้ข้อความกึ่งกลางที่ตำแหน่งคลิก
         draw.text((txt['x'], txt['y']), content, fill=txt['color'], font=font, anchor="mm")
     return img
 
@@ -146,7 +153,7 @@ def hex_to_rgb(hex_color):
     return (0, 0, 0)
 
 def create_pptx_with_editable_text(template_img, texts, data_df):
-    """สร้าง PowerPoint ที่ข้อความสามารถแก้ไขได้"""
+    """สร้าง PowerPoint ที่ข้อความสามารถแก้ไขได้ - ปรับปรุงให้ข้อความพอดี"""
     prs = Presentation()
     
     img_width, img_height = template_img.size
@@ -164,7 +171,7 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
         bg_io.seek(0)
         slide.shapes.add_picture(bg_io, 0, 0, width=prs.slide_width, height=prs.slide_height)
         
-        # เพิ่มข้อความ
+        # เพิ่มข้อความแต่ละรายการ
         for txt in texts:
             if txt['type'] == 'static':
                 content = txt['text']
@@ -178,18 +185,38 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             if not content: 
                 continue
             
-            ppt_content = content
+            # สำหรับ PowerPoint ใช้ข้อความปกติหรือ PUA ตามที่เลือก
+            ppt_font_version = txt.get('ppt_font_version', 'ใหม่')
+            ppt_content = fix_thai_text(content, ppt_font_version)
+            
             font_size_pt = txt['size'] * 0.75
             
+            # คำนวณขนาดข้อความจริง
+            font = get_font(txt.get('font_name'), txt['size'])
+            try:
+                bbox = font.getbbox(content)
+                text_width_px = bbox[2] - bbox[0]
+                text_height_px = bbox[3] - bbox[1]
+            except:
+                text_width_px = len(content) * txt['size'] * 0.6
+                text_height_px = txt['size'] * 1.2
+            
+            # แปลงพิกัดจาก pixel เป็น EMUs (1 pixel = 9525 EMUs)
             center_x_emu = txt['x'] * 9525
             center_y_emu = txt['y'] * 9525
             
-            box_width_emu = prs.slide_width
-            box_height_emu = int(txt['size'] * 2.5 * 9525)
+            # เพิ่ม margin
+            margin = 40
+            box_width_px = text_width_px + margin * 2
+            box_height_px = text_height_px + margin * 2
+            
+            box_width_emu = int(box_width_px * 9525)
+            box_height_emu = int(box_height_px * 9525)
             
             left_emu = center_x_emu - (box_width_emu / 2)
             top_emu = center_y_emu - (box_height_emu / 2)
             
+            # สร้างกล่องข้อความ
             txBox = slide.shapes.add_textbox(
                 int(left_emu), 
                 int(top_emu), 
@@ -197,19 +224,25 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
                 int(box_height_emu)
             )
             
+            # ตั้งค่าข้อความ
             tf = txBox.text_frame
             tf.text = ppt_content
-            tf.word_wrap = True
+            tf.word_wrap = False
             tf.vertical_anchor = MSO_ANCHOR.MIDDLE
             
+            # จัดกึ่งกลางแนวนอน
             p = tf.paragraphs[0]
             p.alignment = PP_ALIGN.CENTER
+            p.space_before = Pt(0)
+            p.space_after = Pt(0)
             
+            # ตั้งค่ารูปแบบฟอนต์
             run = p.runs[0]
             run.font.size = Pt(font_size_pt)
             if txt.get('font_name'):
                 run.font.name = txt['font_name']
             
+            # ตั้งค่าสี
             rgb = hex_to_rgb(txt['color'])
             run.font.color.rgb = RGBColor(rgb[0], rgb[1], rgb[2])
     
@@ -238,6 +271,10 @@ if 'template' not in st.session_state:
     st.session_state.template = None
 if 'data' not in st.session_state:
     st.session_state.data = None
+if 'selected_column' not in st.session_state:
+    st.session_state.selected_column = None
+if 'preview_row' not in st.session_state:
+    st.session_state.preview_row = 0
 
 st.title("📜 Auto Certificate Generator")
 
@@ -252,26 +289,37 @@ with st.sidebar:
     st.markdown("---")
     st.header("2️⃣ จัดการฟอนต์")
     
-    font_type = st.radio("ประเภทฟอนต์", ["ฟอนต์รุ่นใหม่ (OpenType)", "ฟอนต์รุ่นเก่า (PUA)"])
+    # แยกการเลือกฟอนต์สำหรับ PNG/PDF และ PowerPoint
+    st.subheader("ฟอนต์สำหรับ PNG/PDF")
+    font_type_png = st.radio(
+        "ประเภทฟอนต์ PNG/PDF",
+        ["ฟอนต์รุ่นใหม่ (OpenType)", "ฟอนต์รุ่นเก่า (PUA)"],
+        key="font_type_png"
+    )
+    
+    st.subheader("ฟอนต์สำหรับ PowerPoint")
+    font_type_ppt = st.radio(
+        "ประเภทฟอนต์ PowerPoint",
+        ["ฟอนต์รุ่นใหม่ (OpenType)", "ฟอนต์รุ่นเก่า (PUA)"],
+        key="font_type_ppt"
+    )
+    
     uploaded_font = st.file_uploader("🔤 อัปโหลดฟอนต์ .ttf", type=['ttf'])
     
     if uploaded_font:
         f_name = uploaded_font.name.split('.')[0]
-        v_type = "ใหม่" if "ใหม่" in font_type else "เก่า"
         if f_name not in st.session_state.fonts_dict:
             st.session_state.fonts_dict[f_name] = {
-                'data': uploaded_font.getvalue(),
-                'version': v_type
+                'data': uploaded_font.getvalue()
             }
             st.session_state.font_names.append(f_name)
-            st.success(f"✅ เพิ่มฟอนต์ '{f_name}' (รุ่น {v_type})")
+            st.success(f"✅ เพิ่มฟอนต์ '{f_name}' แล้ว")
     
     if st.session_state.font_names:
         st.markdown("---")
         st.write("**📋 ฟอนต์ที่มี:**")
         for f in st.session_state.font_names:
-            v = st.session_state.fonts_dict[f]['version']
-            st.write(f"- {f} (รุ่น {v})")
+            st.write(f"- {f}")
 
     st.markdown("---")
     st.header("3️⃣ รายชื่อข้อมูล")
@@ -297,16 +345,23 @@ st.header("📍 กำหนดตำแหน่งและข้อควา�
 col_img, col_form = st.columns([1.5, 1])
 
 with col_img:
-    # แสดงตัวเลือกแถวตัวอย่าง
-    preview_row = None
+    # แสดงตัวเลือกแถวตัวอย่าง (อยู่นอก form)
     if st.session_state.data is not None and not st.session_state.data.empty:
-        row_idx = st.number_input("ดูตัวอย่างจากแถวที่:", 0, len(st.session_state.data)-1, 0)
-        preview_row = st.session_state.data.iloc[row_idx].to_dict()
+        st.session_state.preview_row = st.number_input(
+            "ดูตัวอย่างจากแถวที่:", 
+            0, 
+            len(st.session_state.data)-1, 
+            st.session_state.preview_row,
+            key="preview_row_input"
+        )
+        preview_row = st.session_state.data.iloc[st.session_state.preview_row].to_dict()
+    else:
+        preview_row = None
     
-    # สร้างรูปพรีวิว
+    # สร้างรูปพรีวิวที่มีข้อความทั้งหมด (แสดงผลทันที)
     current_preview = render_certificate(st.session_state.template, st.session_state.texts, preview_row)
     
-    st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง**")
+    st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง (ข้อความจะอยู่กึ่งกลางจุดคลิก)**")
     original_w, original_h = current_preview.size
     display_w = 700 
     ratio = original_w / display_w if original_w > display_w else 1.0
@@ -319,7 +374,7 @@ with col_img:
             st.session_state.click_x = int(coords['x'] * ratio)
             st.session_state.click_y = int(coords['y'] * ratio)
     except Exception as e:
-        st.warning("⚠️ ระบบคลิกยังไม่ทำงาน กรุณาใช้ slider แทน")
+        st.warning("⚠️ ระบบคลิกไม่ทำงาน กรุณาใช้ slider แทน")
         col1, col2 = st.columns(2)
         with col1:
             st.session_state.click_x = st.slider("X", 0, original_w, st.session_state.click_x)
@@ -331,22 +386,28 @@ with col_img:
 with col_form:
     st.subheader("➕ เพิ่มข้อความ")
     
+    # ตัวเลือกคอลัมน์อยู่นอก form เพื่อให้เลือกแล้วอัปเดตทันที
     cols_options = st.session_state.data.columns.tolist() if st.session_state.data is not None else []
     
-    with st.form("add_text_form", clear_on_submit=True):
-        t_type = st.radio("ชนิดข้อความ", ["ดึงจากไฟล์รายชื่อ", "พิมพ์เอง"], horizontal=True)
-        
-        if t_type == "ดึงจากไฟล์รายชื่อ":
-            if not cols_options:
-                st.warning("⚠️ กรุณาอัปโหลดไฟล์รายชื่อก่อน")
-                t_col = None
-            else:
-                t_col = st.selectbox("เลือกหัวข้อ (คอลัมน์)", cols_options)
-            t_val = ""
+    t_type = st.radio("ชนิดข้อความ", ["ดึงจากไฟล์รายชื่อ", "พิมพ์เอง"], horizontal=True, key="text_type")
+    
+    if t_type == "ดึงจากไฟล์รายชื่อ":
+        if not cols_options:
+            st.warning("⚠️ กรุณาอัปโหลดไฟล์รายชื่อก่อน")
+            selected_column = None
         else:
-            t_val = st.text_input("ข้อความที่ต้องการพิมพ์")
-            t_col = None
-            
+            # ใช้ on_change เพื่ออัปเดต session_state ทันที
+            selected_column = st.selectbox(
+                "เลือกหัวข้อ (คอลัมน์)",
+                cols_options,
+                key="excel_column_select"
+            )
+        t_val = ""
+    else:
+        t_val = st.text_input("ข้อความที่ต้องการพิมพ์", key="text_input")
+        selected_column = None
+    
+    with st.form("add_text_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
         x_pos = c1.number_input("ตำแหน่ง X", value=st.session_state.click_x)
         y_pos = c2.number_input("ตำแหน่ง Y", value=st.session_state.click_y)
@@ -366,18 +427,24 @@ with col_form:
                 st.error("❌ กรุณาเลือกฟอนต์")
             elif t_type == "พิมพ์เอง" and not t_val:
                 st.error("❌ กรุณาพิมพ์ข้อความ")
-            elif t_type == "ดึงจากไฟล์รายชื่อ" and not t_col:
+            elif t_type == "ดึงจากไฟล์รายชื่อ" and not selected_column:
                 st.error("❌ กรุณาเลือกคอลัมน์")
             else:
+                # ดึงประเภทฟอนต์จาก radio ที่เลือก
+                font_version_png = "เก่า" if "เก่า" in font_type_png else "ใหม่"
+                font_version_ppt = "เก่า" if "เก่า" in font_type_ppt else "ใหม่"
+                
                 st.session_state.texts.append({
                     'type': 'excel' if t_type == "ดึงจากไฟล์รายชื่อ" else 'static',
                     'text': t_val, 
-                    'column': t_col,
+                    'column': selected_column,
                     'x': x_pos, 
                     'y': y_pos,
                     'size': f_size, 
                     'color': f_color,
-                    'font_name': selected_font
+                    'font_name': selected_font,
+                    'font_version': font_version_png,  # สำหรับ PNG/PDF
+                    'ppt_font_version': font_version_ppt  # สำหรับ PowerPoint
                 })
                 st.success("✅ เพิ่มข้อความสำเร็จ!")
                 st.rerun()
@@ -389,9 +456,8 @@ with col_form:
         for i, t in enumerate(st.session_state.texts):
             lbl = t['text'] if t['type'] == 'static' else f"📊 {t['column']}"
             col_del1, col_del2 = st.columns([4, 1])
-            font_info = st.session_state.fonts_dict.get(t['font_name'], {})
-            font_version = font_info.get('version', 'ใหม่')
-            col_del1.write(f"{i+1}. {lbl} | ฟอนต์: {t['font_name']} (รุ่น{font_version}) | ขนาด: {t['size']} | พิกัด: ({t['x']}, {t['y']})")
+            font_version_display = t.get('font_version', 'ใหม่')
+            col_del1.write(f"{i+1}. {lbl} | ฟอนต์: {t['font_name']} (รุ่น{font_version_display}) | ขนาด: {t['size']} | พิกัด: ({t['x']}, {t['y']})")
             if col_del2.button("🗑️", key=f"del_{i}"):
                 st.session_state.texts.pop(i)
                 st.rerun()
@@ -413,7 +479,7 @@ if st.session_state.data is not None and not st.session_state.data.empty and st.
                     st.session_state.texts,
                     st.session_state.data
                 )
-                st.success("✅ สร้างไฟล์ PowerPoint เรียบร้อย!")
+                st.success("✅ สร้างไฟล์ PowerPoint เรียบร้อย! (ข้อความแก้ไขได้)")
                 st.download_button(
                     "📥 ดาวน์โหลด PowerPoint",
                     pptx_io.getvalue(),
@@ -447,9 +513,14 @@ with st.sidebar:
     st.markdown("""
     ### 📖 วิธีใช้
     1. อัปโหลดพื้นหลังเกียรติบัตร
-    2. เลือกประเภทฟอนต์และอัปโหลด .ttf
-    3. อัปโหลดไฟล์ Excel/CSV
-    4. คลิกบนรูปเพื่อกำหนดพิกัด
-    5. เพิ่มข้อความ
-    6. สร้างและดาวน์โหลด
+    2. เลือกประเภทฟอนต์สำหรับ PNG/PDF และ PowerPoint
+    3. อัปโหลดฟอนต์ .ttf
+    4. อัปโหลดไฟล์ Excel/CSV
+    5. คลิกบนรูปเพื่อกำหนดพิกัด
+    6. เพิ่มข้อความ (จะแสดงบนรูปทันที)
+    7. สร้างและดาวน์โหลด
+    
+    💡 **ฟอนต์ใหม่:** OpenType
+    💡 **ฟอนต์เก่า:** ปรับสระลอย PUA
+    💡 **PowerPoint:** ข้อความแก้ไขได้
     """)
