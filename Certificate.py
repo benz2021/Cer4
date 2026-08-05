@@ -375,9 +375,8 @@ with col_img:
     # สร้างรูปพรีวิว
     current_preview = render_certificate(st.session_state.template, st.session_state.texts, preview_row)
     
-    st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง (ข้อความจะอยู่กึ่งกลางจุดคลิก)**")
+    st.markdown("**🖱️ คลิกที่ปุ่มเพื่อปรับตำแหน่ง (ข้อความจะอยู่กึ่งกลางจุดคลิก)**")
     
-    # ✅ แทนที่ streamlit_image_coordinates ด้วยการคลิกบนรูป + JavaScript
     original_w, original_h = current_preview.size
     
     # ตั้งค่า Zoom
@@ -392,10 +391,9 @@ with col_img:
     display_w = int(700 * st.session_state.zoom_level)
     display_h = int(original_h * (display_w / original_w))
     
-    # ใช้วิธีการคลิกแบบอื่น - ใช้ปุ่มเลื่อน
+    # ปุ่มควบคุม 8 ทิศทาง
     st.markdown("**🎯 ปรับตำแหน่งด้วยปุ่มควบคุม (ละเอียด 10 พิกเซล)**")
     
-    # สร้างปุ่มควบคุม 8 ทิศทาง
     col_btn1, col_btn2, col_btn3 = st.columns(3)
     with col_btn1:
         if st.button("↖️", use_container_width=True):
@@ -446,11 +444,10 @@ with col_img:
     # แสดงตำแหน่งปัจจุบัน
     st.info(f"📍 พิกัดปัจจุบัน: X={st.session_state.click_x}, Y={st.session_state.click_y}")
     
-    # แสดงรูปภาพพร้อมตำแหน่ง
+    # สร้างรูปพร้อมเครื่องหมาย
     img_with_marker = current_preview.copy()
     draw = ImageDraw.Draw(img_with_marker)
     
-    # วาดเครื่องหมายกากบาท
     marker_size = 15
     draw.line([(st.session_state.click_x - marker_size, st.session_state.click_y), 
                (st.session_state.click_x + marker_size, st.session_state.click_y)], 
@@ -462,9 +459,9 @@ with col_img:
                   (st.session_state.click_x + 5, st.session_state.click_y + 5)], 
                  fill='red')
     
-    # แสดงรูป
+    # แสดงรูป - แก้ไข use_column_width เป็น use_container_width
     img_display = img_with_marker.resize((display_w, display_h))
-    st.image(img_display, use_column_width=True)
+    st.image(img_display, use_container_width=True)
 
 with col_form:
     edit_mode = st.session_state.edit_index is not None
