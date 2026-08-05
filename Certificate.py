@@ -5,6 +5,15 @@ from io import BytesIO
 import zipfile
 import re
 import os
+import tempfile
+
+# --- นำเข้าไลบรารีสำหรับคลิกหาพิกัด ---
+try:
+    from streamlit_image_coordinates import streamlit_image_coordinates
+except ImportError:
+    st.error("⚠️ ไม่พบไลบรารี streamlit-image-coordinates")
+    st.info("กรุณาเปิด Terminal แล้วพิมพ์: pip install streamlit-image-coordinates")
+    st.stop()
 
 # --- นำเข้าไลบรารีสำหรับสร้าง PowerPoint ---
 try:
@@ -20,35 +29,17 @@ except ImportError:
 # 🛠️ HELPER FUNCTIONS
 # ==========================================
 
-def get_system_font_path():
-    """ค้นหาฟอนต์ในระบบ"""
-    paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        "C:\\Windows\\Fonts\\arial.ttf",
-        "C:\\Windows\\Fonts\\tahoma.ttf",
-        "/System/Library/Fonts/Helvetica.ttf"
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            return p
-    return None
-
-def get_font(size):
-    """โหลดฟอนต์ระบบ"""
-    sys_path = get_system_font_path()
-    if sys_path:
-        try:
-            return ImageFont.truetype(sys_path, size)
-        except:
-            return ImageFont.load_default()
-    return ImageFont.load_default()
+def get_font(font_data, size):
+    """โหลดฟอนต์จากข้อมูลที่อัปโหลด"""
+    try:
+        return ImageFont.truetype(BytesIO(font_data), size)
+    except:
+        return ImageFont.load_default()
 
 def sanitize_filename(name):
     return re.sub(r'[<>:"/\\|?*]', '_', str(name)).strip() or "certificate"
 
-def render_certificate(template_img, texts, row_data=None):
+def render_certificate(template_img, texts, row_data=None, fonts_dict=None):
     """สร้างเกียรติบัตรแต่ละใบ"""
     img = template_img.copy()
     if img.mode != 'RGB':
@@ -71,7 +62,14 @@ def render_certificate(template_img, texts, row_data=None):
             continue
         
         # โหลดฟอนต์
-        font = get_font(txt['size'])
+        font_data = None
+        if fonts_dict and txt.get('font_name') in fonts_dict:
+            font_data = fonts_dict[txt['font_name']]
+        
+        if font_data:
+            font = get_font(font_data, txt['size'])
+        else:
+            font = ImageFont.load_default()
         
         # วัดขนาดข้อความ
         try:
@@ -88,7 +86,7 @@ def render_certificate(template_img, texts, row_data=None):
     
     return img
 
-def create_pptx(template_img, texts, data_df, filename_col):
+def create_pptx(template_img, texts, data_df, filename_col, fonts_dict=None):
     """สร้าง PowerPoint"""
     prs = Presentation()
     
@@ -101,7 +99,7 @@ def create_pptx(template_img, texts, data_df, filename_col):
     
     for _, row in data_df.iterrows():
         # สร้างภาพเกียรติบัตร
-        final_img = render_certificate(template_img, texts, row.to_dict())
+        final_img = render_certificate(template_img, texts, row.to_dict(), fonts_dict)
         
         # บันทึกภาพ
         img_io = BytesIO()
@@ -133,6 +131,10 @@ if 'template' not in st.session_state:
     st.session_state.template = None
 if 'data' not in st.session_state:
     st.session_state.data = None
+if 'fonts_dict' not in st.session_state:
+    st.session_state.fonts_dict = {}
+if 'font_names' not in st.session_state:
+    st.session_state.font_names = []
 
 st.title("📜 Certificate Generator")
 
@@ -146,8 +148,28 @@ with st.sidebar:
         st.session_state.template = Image.open(template_file)
         st.success("✅ โหลดพื้นหลังสำเร็จ")
     
-    # 2. Data
-    data_file = st.file_uploader("📊 ไฟล์รายชื่อ (Excel/CSV)", type=['xlsx', 'xls', 'csv'])
+    # 2. Font Management
+    st.markdown("---")
+    st.header("🔤 จัดการฟอนต์")
+    
+    uploaded_font = st.file_uploader("อัปโหลดฟอนต์ (.ttf)", type=['ttf'])
+    if uploaded_font:
+        font_name = uploaded_font.name.split('.')[0]
+        if font_name not in st.session_state.fonts_dict:
+            st.session_state.fonts_dict[font_name] = uploaded_font.getvalue()
+            st.session_state.font_names.append(font_name)
+            st.success(f"✅ เพิ่มฟอนต์ '{font_name}' แล้ว")
+    
+    # แสดงฟอนต์ที่มี
+    if st.session_state.font_names:
+        st.write("**ฟอนต์ที่มี:**")
+        for f in st.session_state.font_names:
+            st.write(f"- {f}")
+    
+    # 3. Data
+    st.markdown("---")
+    st.header("📊 รายชื่อข้อมูล")
+    data_file = st.file_uploader("ไฟล์ Excel/CSV", type=['xlsx', 'xls', 'csv'])
     if data_file:
         try:
             if data_file.name.endswith('.csv'):
@@ -168,7 +190,7 @@ st.header("📍 กำหนดข้อความ")
 col1, col2 = st.columns([1.5, 1])
 
 with col1:
-    st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง**")
+    st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง (พิกัดจะอัปเดตอัตโนมัติ)**")
     
     # แสดงรูป
     original_w, original_h = st.session_state.template.size
@@ -177,27 +199,33 @@ with col1:
     display_h = int(original_h / ratio) if original_w > display_w else original_h
     display_img = st.session_state.template.resize((display_w, display_h))
     
-    # แสดงพิกัด
-    st.image(display_img, caption=f"คลิกที่รูปเพื่อเลือกตำแหน่ง (ขนาด: {original_w}x{original_h})")
+    # ใช้ streamlit_image_coordinates สำหรับคลิก
+    coords = streamlit_image_coordinates(display_img, key="image_click")
     
-    # ใช้ slider แทนการคลิก
-    st.markdown("**หรือปรับพิกัดด้วยแถบเลื่อน:**")
-    col_x, col_y = st.columns(2)
-    with col_x:
-        st.session_state.click_x = st.slider("X", 0, original_w, st.session_state.click_x)
-    with col_y:
-        st.session_state.click_y = st.slider("Y", 0, original_h, st.session_state.click_y)
+    if coords:
+        # แปลงพิกัดจากขนาดแสดงผลเป็นขนาดจริง
+        st.session_state.click_x = int(coords['x'] * ratio)
+        st.session_state.click_y = int(coords['y'] * ratio)
+        
+        # แสดงตำแหน่งที่คลิก
+        st.success(f"✅ คลิกที่ตำแหน่ง X: {st.session_state.click_x}, Y: {st.session_state.click_y}")
+    else:
+        st.info("🖱️ คลิกบนรูปภาพเพื่อเลือกตำแหน่ง")
+    
+    # แสดงพิกัดปัจจุบัน
+    st.metric("พิกัด X", st.session_state.click_x)
+    st.metric("พิกัด Y", st.session_state.click_y)
 
 with col2:
     st.markdown("**✏️ เพิ่มข้อความ**")
     
-    with st.form("add_text_form"):
+    with st.form("add_text_form", clear_on_submit=False):
         # ประเภทข้อความ
         t_type = st.radio("ชนิด", ["พิมพ์เอง", "ดึงจาก Excel"], horizontal=True)
         
         # ข้อความ
         if t_type == "พิมพ์เอง":
-            t_text = st.text_input("พิมพ์ข้อความ")
+            t_text = st.text_input("พิมพ์ข้อความ", placeholder="เช่น ชื่อผู้รับเกียรติบัตร")
             t_col = ""
         else:
             if st.session_state.data is not None:
@@ -205,24 +233,31 @@ with col2:
                 t_text = ""
                 # แสดงตัวอย่าง
                 if st.session_state.data is not None and len(st.session_state.data) > 0:
-                    st.caption(f"ตัวอย่าง: {st.session_state.data[t_col].iloc[0]}")
+                    st.caption(f"📝 ตัวอย่าง: {st.session_state.data[t_col].iloc[0]}")
             else:
                 st.warning("⚠️ กรุณาอัปโหลดไฟล์ Excel ก่อน")
                 t_col = ""
         
-        # พิกัด
+        # พิกัด (อัปเดตอัตโนมัติเมื่อคลิก)
         c1, c2 = st.columns(2)
         with c1:
-            x_pos = st.number_input("X", value=st.session_state.click_x)
+            x_pos = st.number_input("X", value=st.session_state.click_x, step=1)
         with c2:
-            y_pos = st.number_input("Y", value=st.session_state.click_y)
+            y_pos = st.number_input("Y", value=st.session_state.click_y, step=1)
         
         # ขนาดและสี
-        size = st.slider("ขนาดฟอนต์", 10, 300, 60)
-        color = st.color_picker("สี", "#000000")
+        size = st.slider("ขนาดฟอนต์", 10, 500, 60)
+        color = st.color_picker("สีข้อความ", "#000000")
+        
+        # เลือกฟอนต์
+        if st.session_state.font_names:
+            selected_font = st.selectbox("เลือกฟอนต์", st.session_state.font_names)
+        else:
+            st.warning("⚠️ กรุณาอัปโหลดฟอนต์ก่อน")
+            selected_font = None
         
         if st.form_submit_button("➕ เพิ่มข้อความ"):
-            if t_type == "พิมพ์เอง" and t_text:
+            if t_type == "พิมพ์เอง" and t_text and selected_font:
                 st.session_state.texts.append({
                     'type': 'static',
                     'text': t_text,
@@ -230,11 +265,12 @@ with col2:
                     'x': x_pos,
                     'y': y_pos,
                     'size': size,
-                    'color': color
+                    'color': color,
+                    'font_name': selected_font
                 })
                 st.success("✅ เพิ่มข้อความแล้ว!")
                 st.rerun()
-            elif t_type == "ดึงจาก Excel" and t_col:
+            elif t_type == "ดึงจาก Excel" and t_col and selected_font:
                 st.session_state.texts.append({
                     'type': 'excel',
                     'text': '',
@@ -242,12 +278,16 @@ with col2:
                     'x': x_pos,
                     'y': y_pos,
                     'size': size,
-                    'color': color
+                    'color': color,
+                    'font_name': selected_font
                 })
                 st.success("✅ เพิ่มข้อความแล้ว!")
                 st.rerun()
             else:
-                st.error("❌ กรุณากรอกข้อมูลให้ครบ")
+                if not selected_font:
+                    st.error("❌ กรุณาอัปโหลดและเลือกฟอนต์ก่อน")
+                else:
+                    st.error("❌ กรุณากรอกข้อมูลให้ครบ")
 
 # --- แสดงข้อความที่เพิ่ม ---
 st.markdown("---")
@@ -257,7 +297,8 @@ if st.session_state.texts:
     for i, txt in enumerate(st.session_state.texts):
         cols = st.columns([4, 1])
         label = txt['text'] if txt['type'] == 'static' else f"📊 {txt['column']}"
-        cols[0].write(f"{i+1}. {label} | ขนาด: {txt['size']} | พิกัด: ({txt['x']}, {txt['y']})")
+        font_label = f"🔤 {txt.get('font_name', 'Default')}"
+        cols[0].write(f"{i+1}. {label} | {font_label} | ขนาด: {txt['size']} | พิกัด: ({txt['x']}, {txt['y']})")
         if cols[1].button("🗑️", key=f"del_{i}"):
             st.session_state.texts.pop(i)
             st.rerun()
@@ -271,7 +312,12 @@ if st.session_state.texts:
         row_idx = st.number_input("แถวที่", 0, len(st.session_state.data)-1, 0)
         preview_row = st.session_state.data.iloc[row_idx].to_dict()
     
-    preview_img = render_certificate(st.session_state.template, st.session_state.texts, preview_row)
+    preview_img = render_certificate(
+        st.session_state.template, 
+        st.session_state.texts, 
+        preview_row,
+        st.session_state.fonts_dict
+    )
     st.image(preview_img, width=650)
 
 else:
@@ -294,7 +340,13 @@ if st.session_state.data is not None and st.session_state.texts:
         with st.spinner("กำลังสร้าง..."):
             if export_format == "PowerPoint":
                 # สร้าง PowerPoint
-                pptx_io = create_pptx(st.session_state.template, st.session_state.texts, st.session_state.data, filename_col)
+                pptx_io = create_pptx(
+                    st.session_state.template, 
+                    st.session_state.texts, 
+                    st.session_state.data, 
+                    filename_col,
+                    st.session_state.fonts_dict
+                )
                 st.success("✅ สร้าง PowerPoint สำเร็จ!")
                 st.download_button(
                     "📥 ดาวน์โหลด PowerPoint",
@@ -307,7 +359,12 @@ if st.session_state.data is not None and st.session_state.texts:
                 zip_buffer = BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w') as zf:
                     for _, row in st.session_state.data.iterrows():
-                        img = render_certificate(st.session_state.template, st.session_state.texts, row.to_dict())
+                        img = render_certificate(
+                            st.session_state.template, 
+                            st.session_state.texts, 
+                            row.to_dict(),
+                            st.session_state.fonts_dict
+                        )
                         img_io = BytesIO()
                         
                         ext = "png" if export_format == "PNG" else "pdf"
@@ -323,3 +380,16 @@ if st.session_state.data is not None and st.session_state.texts:
                     "certificates.zip",
                     "application/zip"
                 )
+
+# --- คำแนะนำการใช้งาน ---
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("""
+    ### 📖 วิธีใช้
+    1. อัปโหลดพื้นหลังเกียรติบัตร
+    2. อัปโหลดฟอนต์ที่ต้องการ
+    3. อัปโหลดไฟล์ Excel (ถ้ามี)
+    4. คลิกบนรูปเพื่อกำหนดตำแหน่ง
+    5. เพิ่มข้อความ
+    6. สร้างไฟล์และดาวน์โหลด
+    """)
