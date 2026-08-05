@@ -4,3 +4,6 @@ enableCORS = false
 
 [browser]
 gatherUsageStats = false
+
+[runner]
+fixMatplotlib = false
