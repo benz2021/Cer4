@@ -3,4 +3,3 @@ Pillow==9.5.0
 pandas==2.0.3
 openpyxl==3.1.2
 python-pptx==0.6.21
-streamlit-image-coordinates==0.3.1
