@@ -5,15 +5,6 @@ from io import BytesIO
 import zipfile
 import re
 import os
-import tempfile
-
-# --- นำเข้าไลบรารีสำหรับคลิกหาพิกัด ---
-try:
-    from streamlit_image_coordinates import streamlit_image_coordinates
-except ImportError:
-    st.error("⚠️ ไม่พบไลบรารี streamlit-image-coordinates")
-    st.info("กรุณาเปิด Terminal แล้วพิมพ์: pip install streamlit-image-coordinates")
-    st.stop()
 
 # --- นำเข้าไลบรารีสำหรับสร้าง PowerPoint ---
 try:
@@ -192,29 +183,41 @@ col1, col2 = st.columns([1.5, 1])
 with col1:
     st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง (พิกัดจะอัปเดตอัตโนมัติ)**")
     
-    # แสดงรูป
+    # แสดงรูปและรับตำแหน่งคลิกแบบง่าย
     original_w, original_h = st.session_state.template.size
     display_w = 650
     ratio = original_w / display_w if original_w > display_w else 1.0
     display_h = int(original_h / ratio) if original_w > display_w else original_h
     display_img = st.session_state.template.resize((display_w, display_h))
     
-    # ใช้ streamlit_image_coordinates สำหรับคลิก
-    coords = streamlit_image_coordinates(display_img, key="image_click")
+    # ใช้ image + st.button แทนการคลิก
+    col_img, col_coords = st.columns([3, 1])
     
-    if coords:
-        # แปลงพิกัดจากขนาดแสดงผลเป็นขนาดจริง
-        st.session_state.click_x = int(coords['x'] * ratio)
-        st.session_state.click_y = int(coords['y'] * ratio)
+    with col_img:
+        st.image(display_img, use_column_width=True)
+    
+    with col_coords:
+        st.markdown("### 📍 พิกัด")
         
-        # แสดงตำแหน่งที่คลิก
-        st.success(f"✅ คลิกที่ตำแหน่ง X: {st.session_state.click_x}, Y: {st.session_state.click_y}")
-    else:
-        st.info("🖱️ คลิกบนรูปภาพเพื่อเลือกตำแหน่ง")
-    
-    # แสดงพิกัดปัจจุบัน
-    st.metric("พิกัด X", st.session_state.click_x)
-    st.metric("พิกัด Y", st.session_state.click_y)
+        # ใช้滑块แทนการคลิก (ง่ายกว่าและใช้ได้ทุกที่)
+        st.write("**ปรับตำแหน่ง X**")
+        new_x = st.slider("", 0, original_w, st.session_state.click_x, key="slider_x")
+        
+        st.write("**ปรับตำแหน่ง Y**")
+        new_y = st.slider("", 0, original_h, st.session_state.click_y, key="slider_y")
+        
+        # อัปเดตพิกัด
+        st.session_state.click_x = new_x
+        st.session_state.click_y = new_y
+        
+        st.metric("X", st.session_state.click_x)
+        st.metric("Y", st.session_state.click_y)
+        
+        # ปุ่มรีเซ็ต
+        if st.button("🔄 รีเซ็ตพิกัด (0,0)"):
+            st.session_state.click_x = 0
+            st.session_state.click_y = 0
+            st.rerun()
 
 with col2:
     st.markdown("**✏️ เพิ่มข้อความ**")
@@ -238,7 +241,7 @@ with col2:
                 st.warning("⚠️ กรุณาอัปโหลดไฟล์ Excel ก่อน")
                 t_col = ""
         
-        # พิกัด (อัปเดตอัตโนมัติเมื่อคลิก)
+        # พิกัด (ใช้ค่าจาก slider)
         c1, c2 = st.columns(2)
         with c1:
             x_pos = st.number_input("X", value=st.session_state.click_x, step=1)
@@ -389,7 +392,7 @@ with st.sidebar:
     1. อัปโหลดพื้นหลังเกียรติบัตร
     2. อัปโหลดฟอนต์ที่ต้องการ
     3. อัปโหลดไฟล์ Excel (ถ้ามี)
-    4. คลิกบนรูปเพื่อกำหนดตำแหน่ง
+    4. ปรับ slider เพื่อกำหนดตำแหน่ง
     5. เพิ่มข้อความ
     6. สร้างไฟล์และดาวน์โหลด
     """)
