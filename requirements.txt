@@ -1,5 +1,6 @@
 streamlit
+streamlit-image-coordinates
 Pillow
 pandas
-streamlit-image-coordinates
+openpyxl
 python-pptx
