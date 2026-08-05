@@ -5,26 +5,16 @@ from io import BytesIO
 import zipfile
 import re
 import os
-import tempfile
-import hashlib
+import json
 from pptx import Presentation
-from pptx.util import Pt, Inches
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
+from pptx.util import Pt
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.dml.color import RGBColor
-
-# --- นำเข้าไลบรารีสำหรับคลิกหาพิกัด ---
-try:
-    from streamlit_image_coordinates import streamlit_image_coordinates
-except ImportError:
-    st.error("⚠️ ไม่พบไลบรารี streamlit-image-coordinates")
-    st.info("กรุณาเปิด Terminal แล้วพิมพ์: pip install streamlit-image-coordinates")
-    st.stop()
 
 # ==========================================
 # 🛠️ CONSTANTS
 # ==========================================
 EMU_PER_PIXEL = 9525
-PPT_DPI = 96  # PowerPoint ใช้ 96 DPI
 FONT_CACHE = {}
 
 # ==========================================
@@ -47,30 +37,26 @@ def get_system_font_path():
     return None
 
 def fix_thai_text_old(text):
-    """จัดตำแหน่งสระและวรรณยุกต์สำหรับฟอนต์รุ่นเก่า PUA - ครอบคลุมทุกกรณี"""
+    """จัดตำแหน่งสระและวรรณยุกต์สำหรับฟอนต์รุ่นเก่า PUA"""
     if not isinstance(text, str):
         return str(text) if pd.notna(text) else ""
     
     tone_marks = ['\u0e48', '\u0e49', '\u0e4a', '\u0e4b', '\u0e4c']
     high_tone_marks = ['\uf713', '\uf714', '\uf715', '\uf716', '\uf717']
     
-    # 1. วรรณยุกต์ + สระบน
     upper_vowels = ['\u0e31', '\u0e34', '\u0e35', '\u0e36', '\u0e37', '\u0e4d']
     for i, tone in enumerate(tone_marks):
         for vowel in upper_vowels:
             text = text.replace(vowel + tone, vowel + high_tone_marks[i])
     
-    # 2. วรรณยุกต์ + ป ฝ ฟ
     tall_consonants = ['ป', 'ฝ', 'ฟ']
     left_tone_marks = ['\uf70a', '\uf70b', '\uf70c', '\uf70d', '\uf70e']
     for i, tone in enumerate(tone_marks):
         for cons in tall_consonants:
             text = text.replace(cons + tone, cons + left_tone_marks[i])
     
-    # 3. สระอำ
     text = text.replace('\u0e4d\u0e32', '\u0e33')
     
-    # 4. ญ และ ฐ เมื่อมีสระล่าง
     YO_YING_NO_BASE = '\uF70F'
     THO_THAN_NO_BASE = '\uF700'
     text = text.replace('ญุ', YO_YING_NO_BASE + 'ุ')
@@ -80,33 +66,20 @@ def fix_thai_text_old(text):
     text = text.replace('ฐู', THO_THAN_NO_BASE + 'ู')
     text = text.replace('ฐฺ', THO_THAN_NO_BASE + 'ฺ')
     
-    # 5. วรรณยุกต์ + ญ
     for i, tone in enumerate(tone_marks):
         text = text.replace('ญ' + tone, YO_YING_NO_BASE + high_tone_marks[i])
     
-    # 6. เกี๊ยะ, เกี๋ยว, เกื๊อ, เกื๋อ
     text = text.replace('เกี๊ย', 'เกี\uf714ย')
     text = text.replace('เกี๋ย', 'เกี\uf712ย')
     text = text.replace('เกื๊อ', 'เกื\uf714อ')
     text = text.replace('เกื๋อ', 'เกื\uf712อ')
-    
-    # 7. ำ้
     text = text.replace('ำ้', '\u0e33\u0e49')
-    
-    # 8. ณ์, ร์
     text = text.replace('ณ์', '\u0e13\u0e4c')
     text = text.replace('ร์', '\u0e23\u0e4c')
-    
-    # 9. ปิ๊, ปี่, ฝี่, ฟี่
-    text = text.replace('ปิ๊', '\u0e1b\u0e34\u0e4a')
-    text = text.replace('ปี่', '\u0e1b\u0e35\u0e48')
-    text = text.replace('ฝี่', '\u0e1d\u0e35\u0e48')
-    text = text.replace('ฟี่', '\u0e1f\u0e35\u0e48')
     
     return text
 
 def fix_thai_text_new(text):
-    """สำหรับฟอนต์รุ่นใหม่ (OpenType)"""
     if not isinstance(text, str):
         return str(text) if pd.notna(text) else ""
     return text
@@ -115,11 +88,6 @@ def fix_thai_text(text, font_version="ใหม่"):
     if font_version == "เก่า":
         return fix_thai_text_old(text)
     return fix_thai_text_new(text)
-
-@st.cache_data
-def cache_font_data(font_name, font_bytes):
-    """Cache font data เพื่อลดการใช้ RAM"""
-    return font_bytes
 
 def get_font(font_name, size):
     """โหลดฟอนต์พร้อม Cache"""
@@ -143,46 +111,28 @@ def get_font(font_name, size):
             FONT_CACHE[cache_key] = font
             return font
         except:
-            font = ImageFont.load_default()
-            FONT_CACHE[cache_key] = font
-            return font
+            pass
+    
     font = ImageFont.load_default()
     FONT_CACHE[cache_key] = font
     return font
 
 def get_text_bbox(text, font):
-    """คำนวณ bbox ของข้อความ รองรับ Pillow ทุกเวอร์ชัน"""
+    """คำนวณ bbox ของข้อความ"""
     try:
-        # ลองใช้ getbbox (Pillow 10+)
         bbox = font.getbbox(text)
         return bbox
     except AttributeError:
         try:
-            # ลองใช้ getsize (Pillow เก่า)
             width, height = font.getsize(text)
             return (0, 0, width, height)
         except:
-            # สุดท้ายใช้ textlength
             draw = ImageDraw.Draw(Image.new('RGB', (1, 1)))
             width = draw.textlength(text, font=font)
             return (0, 0, int(width), int(width * 0.6))
 
-def pixels_to_points(pixels, dpi=96):
-    """แปลง pixel เป็น point"""
-    return pixels * 72 / dpi
-
-def sanitize_filename(name):
-    return re.sub(r'[<>:"/\\|?*]', '_', str(name)).strip() or "certificate"
-
-@st.cache_data
-def render_certificate_cached(template_bytes, texts_tuple, row_data_tuple):
-    """Cache การ render เพื่อเพิ่มประสิทธิภาพ"""
-    # ต้องแปลง bytes กลับเป็น Image
-    template_img = Image.open(BytesIO(template_bytes))
-    # แปลง texts จาก tuple กลับเป็น list
-    texts = list(texts_tuple)
-    row_data = dict(row_data_tuple) if row_data_tuple else None
-    
+def render_certificate(template_img, texts, row_data=None):
+    """สร้างภาพเกียรติบัตรพร้อมข้อความ"""
     img = template_img.copy()
     if img.mode != 'RGB':
         img = img.convert('RGB')
@@ -205,12 +155,10 @@ def render_certificate_cached(template_bytes, texts_tuple, row_data_tuple):
         content = fix_thai_text(content, font_version)
         font = get_font(txt.get('font_name'), txt['size'])
         
-        # ใช้ bbox คำนวณตำแหน่ง
         bbox = get_text_bbox(content, font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         
-        # คำนวณตำแหน่งให้กึ่งกลาง
         start_x = txt['x'] - (text_width / 2)
         start_y = txt['y'] - (text_height / 2)
         
@@ -218,30 +166,17 @@ def render_certificate_cached(template_bytes, texts_tuple, row_data_tuple):
     
     return img
 
-def render_certificate(template_img, texts, row_data=None):
-    """Wrapper สำหรับ render_certificate_cached"""
-    # เก็บ template เป็น bytes สำหรับ cache
-    template_bytes = BytesIO()
-    template_img.save(template_bytes, format='PNG')
-    template_bytes = template_bytes.getvalue()
-    
-    # แปลง texts เป็น tuple สำหรับ cache
-    texts_tuple = tuple(texts)
-    
-    # แปลง row_data เป็น tuple
-    row_data_tuple = tuple(row_data.items()) if row_data else None
-    
-    return render_certificate_cached(template_bytes, texts_tuple, row_data_tuple)
-
 def hex_to_rgb(hex_color):
-    """แปลงสี Hex เป็น RGB tuple"""
     hex_color = hex_color.lstrip('#')
     if len(hex_color) == 6:
         return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
     return (0, 0, 0)
 
+def sanitize_filename(name):
+    return re.sub(r'[<>:"/\\|?*]', '_', str(name)).strip() or "certificate"
+
 def create_pptx_with_editable_text(template_img, texts, data_df):
-    """สร้าง PowerPoint ที่ข้อความแก้ไขได้ - ปรับปรุงการจัดตำแหน่ง"""
+    """สร้าง PowerPoint ที่ข้อความสามารถแก้ไขได้"""
     prs = Presentation()
     
     img_width, img_height = template_img.size
@@ -250,7 +185,6 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
     
     blank_slide_layout = prs.slide_layouts[6]
     
-    # Cache พื้นหลัง (สร้างครั้งเดียว)
     bg_io = BytesIO()
     template_img.save(bg_io, format="PNG")
     bg_bytes = bg_io.getvalue()
@@ -258,11 +192,9 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
     for idx, row in data_df.iterrows():
         slide = prs.slides.add_slide(blank_slide_layout)
         
-        # แปะภาพพื้นหลัง (ใช้ cache)
         bg_io = BytesIO(bg_bytes)
         slide.shapes.add_picture(bg_io, 0, 0, width=prs.slide_width, height=prs.slide_height)
         
-        # เพิ่มข้อความแต่ละรายการ
         for txt in texts:
             if txt['type'] == 'static':
                 content = txt['text']
@@ -279,21 +211,17 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             ppt_font_version = txt.get('ppt_font_version', 'ใหม่')
             ppt_content = fix_thai_text(content, ppt_font_version)
             
-            # คำนวณขนาดฟอนต์เป็น point
-            font_size_pt = pixels_to_points(txt['size'])
+            font_size_pt = txt['size'] * 0.75
             
-            # คำนวณขนาดข้อความจริง
             font = get_font(txt.get('font_name'), txt['size'])
             bbox = get_text_bbox(content, font)
             text_width_px = bbox[2] - bbox[0]
             text_height_px = bbox[3] - bbox[1]
             
-            # เพิ่ม margin
             margin_px = 20
             box_width_px = text_width_px + margin_px * 2
             box_height_px = text_height_px + margin_px * 2
             
-            # แปลงเป็น EMUs
             box_width_emu = int(box_width_px * EMU_PER_PIXEL)
             box_height_emu = int(box_height_px * EMU_PER_PIXEL)
             
@@ -303,11 +231,9 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             left_emu = center_x_emu - (box_width_emu / 2)
             top_emu = center_y_emu - (box_height_emu / 2)
             
-            # ป้องกันกล่องออกนอกสไลด์
             left_emu = max(0, left_emu)
             top_emu = max(0, top_emu)
             
-            # สร้างกล่องข้อความ
             txBox = slide.shapes.add_textbox(
                 int(left_emu), 
                 int(top_emu), 
@@ -320,7 +246,6 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             tf.word_wrap = False
             tf.vertical_anchor = MSO_ANCHOR.MIDDLE
             
-            # จัดกึ่งกลาง
             p = tf.paragraphs[0]
             p.alignment = PP_ALIGN.CENTER
             p.space_before = Pt(0)
@@ -363,6 +288,8 @@ if 'preview_row' not in st.session_state:
     st.session_state.preview_row = 0
 if 'edit_index' not in st.session_state:
     st.session_state.edit_index = None
+if 'zoom_level' not in st.session_state:
+    st.session_state.zoom_level = 1.0
 
 st.title("📜 Auto Certificate Generator")
 
@@ -445,47 +372,106 @@ with col_img:
     else:
         preview_row = None
     
-    # สร้างรูปพรีวิว (ใช้ Cache)
+    # สร้างรูปพรีวิว
     current_preview = render_certificate(st.session_state.template, st.session_state.texts, preview_row)
     
     st.markdown("**🖱️ คลิกที่รูปเพื่อกำหนดตำแหน่ง (ข้อความจะอยู่กึ่งกลางจุดคลิก)**")
+    
+    # ✅ แทนที่ streamlit_image_coordinates ด้วยการคลิกบนรูป + JavaScript
     original_w, original_h = current_preview.size
-    display_w = 700 
-    ratio = original_w / display_w if original_w > display_w else 1.0
-    display_img = current_preview.resize((display_w, int(original_h / ratio))) if original_w > display_w else current_preview
     
-    # ใช้ streamlit_image_coordinates
-    try:
-        coords = streamlit_image_coordinates(display_img, key="coords")
-        if coords:
-            new_x = int(coords['x'] * ratio)
-            new_y = int(coords['y'] * ratio)
-            if new_x != st.session_state.click_x or new_y != st.session_state.click_y:
-                st.session_state.click_x = new_x
-                st.session_state.click_y = new_y
-                st.rerun()
-    except Exception as e:
-        st.warning("⚠️ ระบบคลิกไม่ทำงาน กรุณาใช้ slider แทน")
-        col1, col2 = st.columns(2)
-        with col1:
-            new_x = st.slider("X", 0, original_w, st.session_state.click_x)
-            if new_x != st.session_state.click_x:
-                st.session_state.click_x = new_x
-        with col2:
-            new_y = st.slider("Y", 0, original_h, st.session_state.click_y)
-            if new_y != st.session_state.click_y:
-                st.session_state.click_y = new_y
+    # ตั้งค่า Zoom
+    zoom_levels = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    st.session_state.zoom_level = st.select_slider(
+        "🔍 ซูม",
+        options=zoom_levels,
+        value=st.session_state.zoom_level,
+        format_func=lambda x: f"{int(x*100)}%"
+    )
     
+    display_w = int(700 * st.session_state.zoom_level)
+    display_h = int(original_h * (display_w / original_w))
+    
+    # ใช้วิธีการคลิกแบบอื่น - ใช้ปุ่มเลื่อน
+    st.markdown("**🎯 ปรับตำแหน่งด้วยปุ่มควบคุม (ละเอียด 10 พิกเซล)**")
+    
+    # สร้างปุ่มควบคุม 8 ทิศทาง
+    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    with col_btn1:
+        if st.button("↖️", use_container_width=True):
+            st.session_state.click_x = max(0, st.session_state.click_x - 10)
+            st.session_state.click_y = max(0, st.session_state.click_y - 10)
+            st.rerun()
+    with col_btn2:
+        if st.button("⬆️", use_container_width=True):
+            st.session_state.click_y = max(0, st.session_state.click_y - 10)
+            st.rerun()
+    with col_btn3:
+        if st.button("↗️", use_container_width=True):
+            st.session_state.click_x = min(original_w, st.session_state.click_x + 10)
+            st.session_state.click_y = max(0, st.session_state.click_y - 10)
+            st.rerun()
+    
+    col_btn4, col_btn5, col_btn6 = st.columns(3)
+    with col_btn4:
+        if st.button("⬅️", use_container_width=True):
+            st.session_state.click_x = max(0, st.session_state.click_x - 10)
+            st.rerun()
+    with col_btn5:
+        if st.button("🎯 กลาง", use_container_width=True):
+            st.session_state.click_x = original_w // 2
+            st.session_state.click_y = original_h // 2
+            st.rerun()
+    with col_btn6:
+        if st.button("➡️", use_container_width=True):
+            st.session_state.click_x = min(original_w, st.session_state.click_x + 10)
+            st.rerun()
+    
+    col_btn7, col_btn8, col_btn9 = st.columns(3)
+    with col_btn7:
+        if st.button("↙️", use_container_width=True):
+            st.session_state.click_x = max(0, st.session_state.click_x - 10)
+            st.session_state.click_y = min(original_h, st.session_state.click_y + 10)
+            st.rerun()
+    with col_btn8:
+        if st.button("⬇️", use_container_width=True):
+            st.session_state.click_y = min(original_h, st.session_state.click_y + 10)
+            st.rerun()
+    with col_btn9:
+        if st.button("↘️", use_container_width=True):
+            st.session_state.click_x = min(original_w, st.session_state.click_x + 10)
+            st.session_state.click_y = min(original_h, st.session_state.click_y + 10)
+            st.rerun()
+    
+    # แสดงตำแหน่งปัจจุบัน
     st.info(f"📍 พิกัดปัจจุบัน: X={st.session_state.click_x}, Y={st.session_state.click_y}")
+    
+    # แสดงรูปภาพพร้อมตำแหน่ง
+    img_with_marker = current_preview.copy()
+    draw = ImageDraw.Draw(img_with_marker)
+    
+    # วาดเครื่องหมายกากบาท
+    marker_size = 15
+    draw.line([(st.session_state.click_x - marker_size, st.session_state.click_y), 
+               (st.session_state.click_x + marker_size, st.session_state.click_y)], 
+              fill='red', width=3)
+    draw.line([(st.session_state.click_x, st.session_state.click_y - marker_size), 
+               (st.session_state.click_x, st.session_state.click_y + marker_size)], 
+              fill='red', width=3)
+    draw.ellipse([(st.session_state.click_x - 5, st.session_state.click_y - 5), 
+                  (st.session_state.click_x + 5, st.session_state.click_y + 5)], 
+                 fill='red')
+    
+    # แสดงรูป
+    img_display = img_with_marker.resize((display_w, display_h))
+    st.image(img_display, use_column_width=True)
 
 with col_form:
     edit_mode = st.session_state.edit_index is not None
     
     if edit_mode:
         st.subheader("✏️ แก้ไขข้อความ")
-        # โหลดข้อมูลเดิมมาแสดง
         edit_txt = st.session_state.texts[st.session_state.edit_index]
-        # กำหนดค่าเริ่มต้น
         default_text = edit_txt.get('text', '')
         default_column = edit_txt.get('column', None)
         default_type = 'excel' if edit_txt['type'] == 'excel' else 'พิมพ์เอง'
@@ -495,10 +481,8 @@ with col_form:
         default_column = None
         default_type = 'พิมพ์เอง'
     
-    # ตัวเลือกคอลัมน์
     cols_options = st.session_state.data.columns.tolist() if st.session_state.data is not None else []
     
-    # Radio - ใช้ค่าเริ่มต้นจาก edit mode
     t_type = st.radio(
         "ชนิดข้อความ",
         ["ดึงจากไฟล์รายชื่อ", "พิมพ์เอง"],
@@ -512,7 +496,6 @@ with col_form:
             st.warning("⚠️ กรุณาอัปโหลดไฟล์รายชื่อก่อน")
             selected_column = None
         else:
-            # หา index ของคอลัมน์เดิม (ถ้ามี)
             default_index = 0
             if default_column and default_column in cols_options:
                 default_index = cols_options.index(default_column)
@@ -524,7 +507,6 @@ with col_form:
             )
         t_val = ""
     else:
-        # ถ้าเป็นโหมดแก้ไขและพิมพ์เอง ให้โหลดข้อความเดิม
         if edit_mode and default_type == 'พิมพ์เอง':
             t_val = st.text_input("ข้อความที่ต้องการพิมพ์", value=default_text, key="text_input")
         else:
@@ -573,7 +555,6 @@ with col_form:
                 font_version_ppt = "เก่า" if "เก่า" in font_type_ppt else "ใหม่"
                 
                 if edit_mode and st.session_state.edit_index is not None:
-                    # อัปเดตข้อความ
                     st.session_state.texts[st.session_state.edit_index] = {
                         'type': 'excel' if t_type == "ดึงจากไฟล์รายชื่อ" else 'static',
                         'text': t_val if t_type == "พิมพ์เอง" else edit_txt.get('text', ''),
@@ -589,7 +570,6 @@ with col_form:
                     st.session_state.edit_index = None
                     st.success("✅ อัปเดตข้อความสำเร็จ!")
                 else:
-                    # เพิ่มข้อความใหม่
                     st.session_state.texts.append({
                         'type': 'excel' if t_type == "ดึงจากไฟล์รายชื่อ" else 'static',
                         'text': t_val,
@@ -605,13 +585,11 @@ with col_form:
                     st.success("✅ เพิ่มข้อความสำเร็จ!")
                 st.rerun()
 
-    # ปุ่มยกเลิกแก้ไข
     if edit_mode:
         if st.button("❌ ยกเลิกการแก้ไข"):
             st.session_state.edit_index = None
             st.rerun()
 
-    # แสดงรายการข้อความ
     if st.session_state.texts:
         st.markdown("---")
         st.write("**📋 รายการข้อความ:**")
@@ -665,7 +643,6 @@ if st.session_state.data is not None and not st.session_state.data.empty and st.
                             final_img.save(img_io, format="PNG")
                             ext = "png"
                         else:
-                            # ใช้ PDF คุณภาพสูง
                             final_img.save(img_io, format="PDF", resolution=300.0)
                             ext = "pdf"
                         zf.writestr(f"{sanitize_filename(row[filename_col])}.{ext}", img_io.getvalue())
@@ -683,10 +660,9 @@ with st.sidebar:
     st.markdown("""
     ### 📖 วิธีใช้
     1. อัปโหลดพื้นหลังเกียรติบัตร
-    2. เลือกประเภทฟอนต์
-    3. อัปโหลดฟอนต์ .ttf
-    4. อัปโหลดไฟล์ Excel/CSV
-    5. คลิกบนรูปเพื่อกำหนดพิกัด
-    6. เพิ่ม/แก้ไขข้อความ
-    7. สร้างและดาวน์โหลด
+    2. เลือกประเภทฟอนต์และอัปโหลด .ttf
+    3. อัปโหลดไฟล์ Excel/CSV
+    4. ใช้ปุ่มควบคุมเพื่อกำหนดพิกัด
+    5. เพิ่ม/แก้ไขข้อความ
+    6. สร้างและดาวน์โหลด
     """)
