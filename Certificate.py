@@ -37,20 +37,26 @@ def get_system_font_path():
     return None
 
 def fix_thai_text(text):
-    """จัดตำแหน่งสระและวรรณยุกต์ภาษาไทยให้ถูกต้อง"""
+    """จัดตำแหน่งสระและวรรณยุกต์ภาษาไทยให้ถูกต้อง (เวอร์ชันปรับปรุง)"""
     if not isinstance(text, str):
         return str(text) if pd.notna(text) else ""
+    
+    # จัดการสระและวรรณยุกต์
     tone_marks = ['\u0e48', '\u0e49', '\u0e4a', '\u0e4b', '\u0e4c']
     upper_vowels = ['\u0e31', '\u0e34', '\u0e35', '\u0e36', '\u0e37', '\u0e4d']
     high_tone_marks = ['\uf713', '\uf714', '\uf715', '\uf716', '\uf717']
+    
     for i, tone in enumerate(tone_marks):
         for vowel in upper_vowels:
             text = text.replace(vowel + tone, vowel + high_tone_marks[i])
+    
     tall_consonants = ['ป', 'ฝ', 'ฟ']
     left_tone_marks = ['\uf70a', '\uf70b', '\uf70c', '\uf70d', '\uf70e']
+    
     for i, tone in enumerate(tone_marks):
         for cons in tall_consonants:
             text = text.replace(cons + tone, cons + left_tone_marks[i])
+    
     text = text.replace('\u0e4d\u0e32', '\u0e33')
     return text
 
@@ -96,6 +102,17 @@ def fix_thai_baseless_chars(text):
 
     return text
 
+def prepare_thai_text(text):
+    """เตรียมข้อความภาษาไทยให้แสดงผลถูกต้อง"""
+    if not isinstance(text, str):
+        return str(text) if pd.notna(text) else ""
+    
+    # แก้สระภาษาไทยและวรรณยุกต์
+    text = fix_thai_text(text)
+    # ตัดฐาน ญ, ฐ เมื่อมีสระล่าง
+    text = fix_thai_baseless_chars(text)
+    return text
+
 def render_certificate(template_img, texts, row_data=None):
     img = template_img.copy()
     if img.mode != 'RGB':
@@ -114,9 +131,8 @@ def render_certificate(template_img, texts, row_data=None):
         
         if not content: continue
         
-        # แก้สระภาษาไทยและวรรณยุกต์
-        content = fix_thai_text(content)
-        content = fix_thai_baseless_chars(content) 
+        # เตรียมข้อความภาษาไทย
+        content = prepare_thai_text(content)
             
         # ใช้ฟอนต์ที่บันทึกไว้สำหรับข้อความนี้โดยเฉพาะ
         font = get_font(txt.get('font_name'), txt['size'])
@@ -143,7 +159,7 @@ def hex_to_rgb(hex_color):
     return (0, 0, 0)
 
 def create_pptx_with_editable_text(template_img, texts, data_df):
-    """สร้าง PowerPoint ที่ข้อความสามารถแก้ไขได้"""
+    """สร้าง PowerPoint ที่ข้อความสามารถแก้ไขได้ และรองรับภาษาไทย"""
     prs = Presentation()
     
     # กำหนดขนาดสไลด์
@@ -181,14 +197,19 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             if not content:
                 continue
             
+            # เตรียมข้อความภาษาไทย (สำหรับแสดงใน PowerPoint)
+            # สำหรับ PowerPoint ใช้ข้อความปกติ (ไม่ต้องใช้ PUA)
+            ppt_content = content
+            
             # คำนวณขนาดและตำแหน่ง
-            # ใช้ฟอนต์เพื่อวัดขนาดข้อความ
+            # ใช้ฟอนต์เพื่อวัดขนาดข้อความ (ใช้ฟอนต์ที่อัปโหลด)
             font = get_font(txt.get('font_name'), txt['size'])
             
             try:
-                text_bbox = font.getbbox(content)
-                text_width_px = text_bbox[2] - text_bbox[0]
-                text_height_px = text_bbox[3] - text_bbox[1]
+                # วัดขนาดข้อความด้วย PIL
+                bbox = font.getbbox(content)
+                text_width_px = bbox[2] - bbox[0]
+                text_height_px = bbox[3] - bbox[1]
             except:
                 text_width_px = len(content) * txt['size'] * 0.6
                 text_height_px = txt['size'] * 1.2
@@ -198,9 +219,10 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             center_x_emu = txt['x'] * 9525
             center_y_emu = txt['y'] * 9525
             
-            # ความกว้างและความสูงของกล่องข้อความ (กว้างกว่าข้อความเล็กน้อย)
-            box_width_emu = int((text_width_px + 100) * 9525)
-            box_height_emu = int((text_height_px + 50) * 9525)
+            # เพิ่ม padding เพื่อให้ข้อความไม่ติดขอบ
+            padding = 20
+            box_width_emu = int((text_width_px + padding * 2) * 9525)
+            box_height_emu = int((text_height_px + padding * 2) * 9525)
             
             # คำนวณตำแหน่งซ้ายบนของกล่องข้อความ (ให้กึ่งกลาง)
             left_emu = center_x_emu - (box_width_emu / 2)
@@ -216,7 +238,7 @@ def create_pptx_with_editable_text(template_img, texts, data_df):
             
             # ตั้งค่าข้อความ
             tf = txBox.text_frame
-            tf.text = content
+            tf.text = ppt_content
             tf.word_wrap = True
             tf.vertical_anchor = MSO_ANCHOR.MIDDLE
             
